@@ -155,12 +155,19 @@ export class OrdersService {
       let variantIndex: number | null = null;
       if (item.variant?.name && product.variants?.length) {
         const vName = item.variant.name;
+        const norm = (s: string | undefined) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const normNum = (s: string | undefined) => (s ?? '').replace(/\D/g, '') || null;
         for (let i = 0; i < product.variants.length; i++) {
           const pv = product.variants[i] as any;
           const pn = pv?.name;
-          const match = (vName.ua && pn?.ua === vName.ua) || (vName.ru && pn?.ru === vName.ru) || (vName.en && pn?.en === vName.en)
-            || (vName.ua && pn?.ua === String(vName.ua)) || (vName.ru && pn?.ru === String(vName.ru)) || (vName.en && pn?.en === String(vName.en));
-          if (match) {
+          const exact = (vName.ua && pn?.ua === vName.ua) || (vName.ru && pn?.ru === vName.ru) || (vName.en && pn?.en === vName.en);
+          const byNum = vName.ua && normNum(pn?.ua) && normNum(pn?.ua) === normNum(vName.ua)
+            || vName.ru && normNum(pn?.ru) && normNum(pn?.ru) === normNum(vName.ru)
+            || vName.en && normNum(pn?.en) && normNum(pn?.en) === normNum(vName.en);
+          const byContains = [vName.ua, vName.ru, vName.en].some(
+            (v) => v && [pn?.ua, pn?.ru, pn?.en].some((p) => p && (norm(p).startsWith(norm(v)) || norm(v).startsWith(norm(p)) || norm(p).includes(norm(v)))),
+          );
+          if (exact || byNum || byContains) {
             variantIndex = i;
             break;
           }
@@ -286,7 +293,8 @@ export class OrdersService {
   
   private formatOrderMessage(order: OrderDocument): string {
     const items = order.items.map((item, index) => {
-      return `${index + 1}. <b>${item.productName}</b>\n   Количество: ${item.quantity}\n   Цена: ${item.price} ${order.currency}\n   Итого: ${item.total} ${order.currency}`;
+      const volume = item.variantName ? ` (${item.variantName})` : '';
+      return `${index + 1}. <b>${item.productName}</b>${volume}\n   Количество: ${item.quantity}\n   Цена: ${item.price} ${order.currency}\n   Итого: ${item.total} ${order.currency}`;
     }).join('\n\n');
 
     const customer = order.customer;
