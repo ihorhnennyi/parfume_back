@@ -34,15 +34,15 @@ export class OrdersService {
 
   
   async create(createOrderDto: CreateOrderDto, sessionId?: string, ipAddress?: string, userAgent?: string): Promise<Order> {
-    
-    const productIds = createOrderDto.items.map(item => new Types.ObjectId(item.product));
+    const uniqueProductIds = [...new Set(createOrderDto.items.map((item) => item.product))];
+    const productIds = uniqueProductIds.map((id) => new Types.ObjectId(id));
     const products = await this.productModel.find({ _id: { $in: productIds } }).exec();
 
-    if (products.length !== createOrderDto.items.length) {
+    if (products.length !== uniqueProductIds.length) {
       throw new BadRequestException('Some products not found');
     }
 
-    const productMap = new Map(products.map(p => [p._id.toString(), p]));
+    const productMap = new Map(products.map((p) => [p._id.toString(), p]));
 
     
     const orderItems = createOrderDto.items.map(item => {
