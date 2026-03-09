@@ -16,6 +16,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiQuery,
+  ApiBody,
 } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -45,7 +46,53 @@ export class OrdersController {
 
   @Public()
   @Post('checkout')
-  @ApiOperation({ summary: 'Оформити замовлення з формату ORDER_PAYLOAD (customer.fullName, items[].productId, qty, variant)' })
+  @ApiOperation({ summary: 'Оформити замовлення (заявку) з сайту — customer.fullName, items з variant (милилітраж), summary' })
+  @ApiBody({
+    description: 'Приклад тіла запиту з сайту. Відправляється в адмінку та в Telegram.',
+    schema: {
+      example: {
+        customer: {
+          fullName: 'ewwefwef',
+          phone: '4234234',
+          email: 'efefsefe@gmail.com',
+          city: 'fsfsf',
+          address: 'efsefsef',
+          comment: '',
+        },
+        items: [
+          {
+            productId: '69ac91d3f0aa80e535c3ed6e',
+            title: 'Channel Blue',
+            image: 'https://api.example.org/uploads/products/.../image.jpg',
+            qty: 1,
+            price: 1000,
+            currency: 'UAH',
+            subtotal: 1000,
+            variant: { name: { ua: '5', ru: '5', en: '5' }, price: { current: 1000, old: null, currency: 'UAH' }, image: null, isActive: true, stock: 0, sku: '' },
+          },
+          {
+            productId: '69ac91d3f0aa80e535c3ed6e',
+            title: 'Channel Blue',
+            qty: 1,
+            price: 4999.96,
+            currency: 'UAH',
+            subtotal: 4999.96,
+            variant: { name: { ua: '50', ru: '50', en: '50' }, price: { current: 4999.96, old: null, currency: 'UAH' }, image: null, isActive: true, stock: 0, sku: '' },
+          },
+          {
+            productId: '69ac91d3f0aa80e535c3ed6e',
+            title: 'Channel Blue',
+            qty: 1,
+            price: 10000,
+            currency: 'UAH',
+            subtotal: 10000,
+            variant: { name: { ua: '100', ru: '100', en: '100' }, price: { current: 10000, old: null, currency: 'UAH' }, image: null, isActive: true, stock: 0, sku: '' },
+          },
+        ],
+        summary: { totalItems: 3, totalPrice: 15999.96, currency: 'UAH' },
+      },
+    },
+  })
   @ApiResponse({ status: 201, description: 'Замовлення створено (в адмінку та в Telegram)' })
   @ApiResponse({ status: 400, description: 'Невалідні дані або товар не знайдено' })
   async checkout(@Body() payload: CreateOrderPayloadDto, @Req() req: any) {
