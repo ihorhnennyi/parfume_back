@@ -24,10 +24,20 @@ export class OrderItemDto {
   @Min(1)
   quantity: number;
 
-  @ApiPropertyOptional({ description: 'Вариант товара' })
+  @ApiPropertyOptional({ description: 'Індекс варіанта (0, 1, 2...)' })
   @IsString()
   @IsOptional()
   variant?: string;
+
+  @ApiPropertyOptional({ description: 'Назва варіанта з запроса (напр. 5, 50 — для відображення милилітражу)' })
+  @IsString()
+  @IsOptional()
+  variantName?: string;
+
+  @ApiPropertyOptional({ description: 'URL зображення варіанта з запроса' })
+  @IsString()
+  @IsOptional()
+  variantImage?: string;
 
   @ApiPropertyOptional({ description: 'Атрибуты товара', type: Object })
   @IsObject()

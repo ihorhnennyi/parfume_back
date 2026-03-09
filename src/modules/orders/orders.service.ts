@@ -63,10 +63,10 @@ export class OrdersService {
         : product.price?.current ?? 0;
       const total = price * item.quantity;
 
-      const variantNameStr = variant?.name
+      const variantNameStr = item.variantName ?? (variant?.name
         ? (variant.name.ua || variant.name.ru || variant.name.en || '')
-        : null;
-      const variantImageUrl = variant?.image || null;
+        : null);
+      const variantImageUrl = item.variantImage ?? variant?.image ?? null;
       const productImageUrl = variantImageUrl
         || (product.images && product.images.length > 0 ? product.images[0].url : null);
 
@@ -142,7 +142,7 @@ export class OrdersService {
     const firstName = nameParts[0] || fullName;
     const lastName = nameParts.slice(1).join(' ') || '—';
 
-    const items: { product: string; quantity: number; variant?: string }[] = [];
+    const items: { product: string; quantity: number; variant?: string; variantName?: string; variantImage?: string }[] = [];
     const productIds = [...new Set(payload.items.map((i) => i.productId))];
     const products = await this.productModel.find({ _id: { $in: productIds.map((id) => new Types.ObjectId(id)) } }).exec();
     const productMap = new Map(products.map((p) => [p._id.toString(), p]));
@@ -152,6 +152,10 @@ export class OrdersService {
       if (!product) {
         throw new BadRequestException(`Product ${item.productId} not found`);
       }
+      const variantNameFromPayload = item.variant?.name
+        ? (item.variant.name.ua || item.variant.name.ru || item.variant.name.en || '').trim()
+        : '';
+      const variantImageFromPayload = item.variant?.image || null;
       let variantIndex: number | null = null;
       if (item.variant?.name && product.variants?.length) {
         const vName = item.variant.name;
@@ -177,6 +181,8 @@ export class OrdersService {
         product: item.productId,
         quantity: item.qty,
         ...(variantIndex !== null ? { variant: String(variantIndex) } : {}),
+        ...(variantNameFromPayload ? { variantName: variantNameFromPayload } : {}),
+        ...(variantImageFromPayload ? { variantImage: variantImageFromPayload } : {}),
       });
     }
 
@@ -203,7 +209,7 @@ export class OrdersService {
     return this.create(dto, sessionId, ipAddress, userAgent);
   }
 
-  /** Тестовий заказ у форматі ORDER_PAYLOAD (customer.fullName, items з variant, summary) — в адмінку та в Telegram. */
+  /** Тестовий заказ як з запроса: обʼєми 5, 10, 50 мл (або перші варіанти), customer + items + summary — в адмінку та в Telegram. */
   async createTestOrder(): Promise<Order> {
     const product = await this.productModel.findOne({}).exec();
     if (!product) {
@@ -214,41 +220,81 @@ export class OrdersService {
       ? (product.name.ua || product.name.ru || product.name.en || '')
       : String(product.name ?? '');
     const variants = product.variants || [];
-    const firstVariant = variants[0] as any;
-    const price = firstVariant?.price?.current ?? product.price?.current ?? 0;
-    const qty = 2;
+    const normNum = (s: string | undefined) => (s ?? '').replace(/\D/g, '') || '';
+    const findVariantByVolume = (vol: string) =>
+      variants.findIndex((v: any) => {
+        const ua = normNum(v?.name?.ua);
+        const ru = normNum(v?.name?.ru);
+        const en = normNum(v?.name?.en);
+        return ua === vol || ru === vol || en === vol;
+      });
+
+    const items: CreateOrderPayloadDto['items'] = [];
+    let totalPrice = 0;
+    const volumes = ['5', '10', '50'];
+
+    const indicesToUse: number[] = [];
+    for (const vol of volumes) {
+      const idx = findVariantByVolume(vol);
+      if (idx >= 0) indicesToUse.push(idx);
+    }
+    if (indicesToUse.length === 0 && variants.length > 0) {
+      for (let i = 0; i < Math.min(3, variants.length); i++) indicesToUse.push(i);
+    }
+
+    for (let k = 0; k < indicesToUse.length; k++) {
+      const idx = indicesToUse[k];
+      const v = variants[idx] as any;
+      const price = v?.price?.current ?? product.price?.current ?? 0;
+      const qty = 1;
+      const subtotal = price * qty;
+      totalPrice += subtotal;
+      const volLabel = v?.name?.ua || v?.name?.ru || v?.name?.en || volumes[k] || '';
+      items.push({
+        productId,
+        title: productName,
+        qty,
+        price,
+        subtotal,
+        currency: 'UAH',
+        variant: {
+          name: { ua: volLabel, ru: volLabel, en: volLabel },
+          price: v?.price ? { current: v.price.current, old: v.price.old ?? null, currency: v.price.currency || 'UAH' } : undefined,
+          image: v?.image ?? null,
+          isActive: v?.isActive !== false,
+          sku: v?.sku ?? '',
+          stock: v?.stock ?? 0,
+        },
+      });
+    }
+
+    if (items.length === 0) {
+      const price = product.price?.current ?? 0;
+      const qty = 2;
+      totalPrice = price * qty;
+      items.push({
+        productId,
+        title: productName,
+        qty,
+        price,
+        subtotal: totalPrice,
+        currency: 'UAH',
+      });
+    }
+
     const payload: CreateOrderPayloadDto = {
       customer: {
         fullName: 'Тест Тестов',
-        email: 'test@example.com',
         phone: '+380501234567',
-        address: 'вул. Хрещатик 15, кв. 24',
+        email: 'test@example.com',
         city: 'Київ',
-        comment: 'Тестовый заказ (админка / API)',
+        address: 'вул. Хрещатик 15, кв. 24',
+        comment: 'Тестовый заказ (админка / API) — 5, 10, 50 мл',
       },
-      items: [
-        {
-          productId,
-          title: productName,
-          qty,
-          price,
-          subtotal: price * qty,
-          currency: 'UAH',
-          variant: firstVariant
-            ? {
-                name: firstVariant.name,
-                price: firstVariant.price ? { current: firstVariant.price.current, old: firstVariant.price.old ?? null, currency: firstVariant.price.currency || 'UAH' } : undefined,
-                image: firstVariant.image ?? null,
-                isActive: firstVariant.isActive !== false,
-                sku: firstVariant.sku ?? '',
-                stock: firstVariant.stock ?? 0,
-              }
-            : undefined,
-        },
-      ],
+      items,
       summary: {
-        totalItems: 1,
-        totalPrice: price * qty,
+        totalItems: items.length,
+        totalPrice,
         currency: 'UAH',
       },
     };
@@ -292,37 +338,51 @@ export class OrdersService {
 
   
   private formatOrderMessage(order: OrderDocument): string {
+    const toVolumeLabel = (s: string | undefined) => {
+      if (!s || !String(s).trim()) return null;
+      const t = String(s).trim();
+      return /^\d+$/.test(t) ? `${t} мл` : t;
+    };
     const items = order.items.map((item, index) => {
-      const volume = item.variantName ? ` (${item.variantName})` : '';
-      return `${index + 1}. <b>${item.productName}</b>${volume}\n   Количество: ${item.quantity}\n   Цена: ${item.price} ${order.currency}\n   Итого: ${item.total} ${order.currency}`;
+      const volumeLabel = item.variantName ? toVolumeLabel(item.variantName) : null;
+      const lines = [
+        `📦 <b>Позиція ${index + 1}</b>`,
+        `   Товар: ${item.productName}`,
+        volumeLabel ? `   Обʼєм / милилітраж: ${volumeLabel}` : '',
+        `   Кількість: ${item.quantity}`,
+        `   Ціна за шт: ${item.price} ${order.currency}`,
+        `   Сума: ${item.total} ${order.currency}`,
+      ].filter(Boolean).join('\n');
+      return lines;
     }).join('\n\n');
 
     const customer = order.customer;
-    const address = order.deliveryAddress 
-      ? `\n<b>Адрес доставки:</b>\n${order.deliveryAddress.country}, ${order.deliveryAddress.city}\n${order.deliveryAddress.street}${order.deliveryAddress.building ? ', ' + order.deliveryAddress.building : ''}${order.deliveryAddress.apartment ? ', кв. ' + order.deliveryAddress.apartment : ''}${order.deliveryAddress.postalCode ? '\nИндекс: ' + order.deliveryAddress.postalCode : ''}${order.deliveryAddress.notes ? '\nПримечание: ' + order.deliveryAddress.notes : ''}`
+    const address = order.deliveryAddress
+      ? `\n<b>Адреса доставки:</b>\n${order.deliveryAddress.country}, ${order.deliveryAddress.city}\n${order.deliveryAddress.street}${order.deliveryAddress.building ? ', ' + order.deliveryAddress.building : ''}${order.deliveryAddress.apartment ? ', кв. ' + order.deliveryAddress.apartment : ''}${order.deliveryAddress.postalCode ? '\nІндекс: ' + order.deliveryAddress.postalCode : ''}${order.deliveryAddress.notes ? '\nПримітка: ' + order.deliveryAddress.notes : ''}`
       : '';
 
     return `
-🛒 <b>Новый заказ #${order.orderNumber}</b>
+🛒 <b>Новий заказ #${order.orderNumber}</b>
 
-<b>Товары:</b>
+<b>——— Товари ———</b>
 ${items}
 
-<b>Клиент:</b>
-Имя: ${customer.firstName} ${customer.lastName}
+<b>——— Клієнт ———</b>
+ПІБ: ${customer.firstName} ${customer.lastName}
 Email: ${customer.email}
 Телефон: ${customer.phone}
-${customer.company ? 'Компания: ' + customer.company : ''}${address}
+${customer.company ? 'Компанія: ' + customer.company : ''}${address}
 
-<b>Оплата:</b> ${this.getPaymentMethodName(order.paymentMethod)}
-<b>Доставка:</b> ${this.getDeliveryMethodName(order.deliveryMethod)}
+<b>——— Оплата та доставка ———</b>
+Оплата: ${this.getPaymentMethodName(order.paymentMethod)}
+Доставка: ${this.getDeliveryMethodName(order.deliveryMethod)}
 
-<b>Сумма:</b>
-Товары: ${order.subtotal} ${order.currency}
+<b>——— Сума ———</b>
+Товари: ${order.subtotal} ${order.currency}
 Доставка: ${order.deliveryCost} ${order.currency}
-<b>Итого: ${order.total} ${order.currency}</b>
+<b>Разом: ${order.total} ${order.currency}</b>
 
-${order.notes ? `\n<b>Комментарий:</b> ${order.notes}` : ''}
+${order.notes ? `\n<b>Коментар:</b> ${order.notes}` : ''}
 ${order.promoCode ? `\n<b>Промокод:</b> ${order.promoCode}` : ''}
 
 Статус: ${this.getStatusName(order.status)}
