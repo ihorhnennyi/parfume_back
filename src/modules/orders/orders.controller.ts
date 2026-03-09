@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateOrderPayloadDto } from './dto/order-payload.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { JwtAuthGuard } from '../admin/guards/jwt-auth.guard';
@@ -40,6 +41,18 @@ export class OrdersController {
     const userAgent = req.headers['user-agent'];
     
     return this.ordersService.create(createOrderDto, sessionId, ipAddress, userAgent);
+  }
+
+  @Public()
+  @Post('checkout')
+  @ApiOperation({ summary: 'Оформити замовлення з формату ORDER_PAYLOAD (customer.fullName, items[].productId, qty, variant)' })
+  @ApiResponse({ status: 201, description: 'Замовлення створено (в адмінку та в Telegram)' })
+  @ApiResponse({ status: 400, description: 'Невалідні дані або товар не знайдено' })
+  async checkout(@Body() payload: CreateOrderPayloadDto, @Req() req: any) {
+    const sessionId = req.headers['x-session-id'] || req.sessionID;
+    const ipAddress = req.ip || req.connection?.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.ordersService.createFromPayload(payload, sessionId, ipAddress, userAgent);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -65,6 +78,16 @@ export class OrdersController {
   @ApiResponse({ status: 200, description: 'Статистика заказов' })
   getStatistics() {
     return this.ordersService.getStatistics();
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @Post('test')
+  @ApiOperation({ summary: 'Создать тестовый заказ (первый товар, 2 шт) — в админку и в Telegram' })
+  @ApiResponse({ status: 201, description: 'Тестовый заказ создан' })
+  @ApiResponse({ status: 400, description: 'Нет товаров в каталоге' })
+  createTestOrder() {
+    return this.ordersService.createTestOrder();
   }
 
   @Public()

@@ -11,6 +11,35 @@ export class TelegramService {
   constructor(private configService: ConfigService) {}
 
   
+  /**
+   * Отправить сообщение по токену и chat_id (без интеграции в БД).
+   * Используется для уведомлений о заказах из env TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+   */
+  async sendMessageToChat(
+    botToken: string,
+    chatId: string,
+    message: string,
+    options?: Record<string, any>,
+  ): Promise<any> {
+    if (!botToken || !chatId) {
+      throw new BadRequestException('Telegram bot token and chat ID are required');
+    }
+    const url = `${this.baseUrl}${botToken}/sendMessage`;
+    const payload = {
+      chat_id: chatId,
+      text: message,
+      parse_mode: options?.parseMode || 'HTML',
+      disable_web_page_preview: options?.disableWebPagePreview ?? false,
+      ...options,
+    };
+    const response = await axios.post(url, payload);
+    return {
+      success: true,
+      messageId: response.data.result?.message_id,
+      data: response.data,
+    };
+  }
+
   async sendMessage(
     integration: IntegrationDocument,
     message: string,

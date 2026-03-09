@@ -1,9 +1,11 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Order, OrderDocument, OrderStatus, PaymentMethod, DeliveryMethod } from './schemas/order.schema';
 import { Cart, CartDocument, CartItem } from './schemas/cart.schema';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateOrderPayloadDto } from './dto/order-payload.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { NotFoundException } from '../../common/exceptions';
@@ -18,6 +20,7 @@ export class OrdersService {
     @InjectModel(Order.name) private orderModel: Model<OrderDocument>,
     @InjectModel(Cart.name) private cartModel: Model<CartDocument>,
     @InjectModel(Product.name) private productModel: Model<ProductDocument>,
+    private configService: ConfigService,
     private telegramService: TelegramService,
     private integrationsService: IntegrationsService,
   ) {}
@@ -121,38 +124,162 @@ export class OrdersService {
     return savedOrder;
   }
 
-  
+  /**
+   * Прийняти замовлення в форматі ORDER_PAYLOAD (від магазину: customer.fullName, items[].productId, qty, variant).
+   * Перетворює в CreateOrderDto і викликає create() — заказ в админку і в Telegram.
+   */
+  async createFromPayload(
+    payload: CreateOrderPayloadDto,
+    sessionId?: string,
+    ipAddress?: string,
+    userAgent?: string,
+  ): Promise<Order> {
+    if (!payload.items?.length) {
+      throw new BadRequestException('Замовлення повинно містити хоча б одну позицію');
+    }
+    const fullName = (payload.customer.fullName || '').trim() || payload.customer.email || 'Клієнт';
+    const nameParts = fullName.split(/\s+/).filter(Boolean);
+    const firstName = nameParts[0] || fullName;
+    const lastName = nameParts.slice(1).join(' ') || '—';
+
+    const items: { product: string; quantity: number; variant?: string }[] = [];
+    const productIds = [...new Set(payload.items.map((i) => i.productId))];
+    const products = await this.productModel.find({ _id: { $in: productIds.map((id) => new Types.ObjectId(id)) } }).exec();
+    const productMap = new Map(products.map((p) => [p._id.toString(), p]));
+
+    for (const item of payload.items) {
+      const product = productMap.get(item.productId);
+      if (!product) {
+        throw new BadRequestException(`Product ${item.productId} not found`);
+      }
+      let variantIndex: number | null = null;
+      if (item.variant?.name && product.variants?.length) {
+        const vName = item.variant.name;
+        for (let i = 0; i < product.variants.length; i++) {
+          const pv = product.variants[i] as any;
+          const pn = pv?.name;
+          const match = (vName.ua && pn?.ua === vName.ua) || (vName.ru && pn?.ru === vName.ru) || (vName.en && pn?.en === vName.en)
+            || (vName.ua && pn?.ua === String(vName.ua)) || (vName.ru && pn?.ru === String(vName.ru)) || (vName.en && pn?.en === String(vName.en));
+          if (match) {
+            variantIndex = i;
+            break;
+          }
+        }
+      }
+      items.push({
+        product: item.productId,
+        quantity: item.qty,
+        ...(variantIndex !== null ? { variant: String(variantIndex) } : {}),
+      });
+    }
+
+    const currency = payload.summary?.currency || 'UAH';
+    const dto: CreateOrderDto = {
+      items,
+      customer: {
+        firstName,
+        lastName,
+        email: payload.customer.email,
+        phone: payload.customer.phone,
+      },
+      deliveryAddress: {
+        country: 'Украина',
+        city: (payload.customer.city || '').trim() || 'Київ',
+        street: (payload.customer.address || '').trim() || '—',
+      },
+      paymentMethod: PaymentMethod.CASH,
+      deliveryMethod: DeliveryMethod.COURIER,
+      notes: (payload.customer.comment || '').trim() || undefined,
+      deliveryCost: 0,
+      currency,
+    };
+    return this.create(dto, sessionId, ipAddress, userAgent);
+  }
+
+  /** Тестовий заказ у форматі ORDER_PAYLOAD (customer.fullName, items з variant, summary) — в адмінку та в Telegram. */
+  async createTestOrder(): Promise<Order> {
+    const product = await this.productModel.findOne({}).exec();
+    if (!product) {
+      throw new BadRequestException('Нет товаров в каталоге. Сначала создайте товар.');
+    }
+    const productId = product._id.toString();
+    const productName = product.name && typeof product.name === 'object'
+      ? (product.name.ua || product.name.ru || product.name.en || '')
+      : String(product.name ?? '');
+    const variants = product.variants || [];
+    const firstVariant = variants[0] as any;
+    const price = firstVariant?.price?.current ?? product.price?.current ?? 0;
+    const qty = 2;
+    const payload: CreateOrderPayloadDto = {
+      customer: {
+        fullName: 'Тест Тестов',
+        email: 'test@example.com',
+        phone: '+380501234567',
+        address: 'вул. Хрещатик 15, кв. 24',
+        city: 'Київ',
+        comment: 'Тестовый заказ (админка / API)',
+      },
+      items: [
+        {
+          productId,
+          title: productName,
+          qty,
+          price,
+          subtotal: price * qty,
+          currency: 'UAH',
+          variant: firstVariant
+            ? {
+                name: firstVariant.name,
+                price: firstVariant.price ? { current: firstVariant.price.current, old: firstVariant.price.old ?? null, currency: firstVariant.price.currency || 'UAH' } : undefined,
+                image: firstVariant.image ?? null,
+                isActive: firstVariant.isActive !== false,
+                sku: firstVariant.sku ?? '',
+                stock: firstVariant.stock ?? 0,
+              }
+            : undefined,
+        },
+      ],
+      summary: {
+        totalItems: 1,
+        totalPrice: price * qty,
+        currency: 'UAH',
+      },
+    };
+    return this.createFromPayload(payload);
+  }
+
   private async sendOrderToTelegram(order: OrderDocument): Promise<void> {
+    const message = this.formatOrderMessage(order);
     try {
-      
-      const telegramIntegrations = await this.integrationsService.findActiveByType(IntegrationType.TELEGRAM);
-      
-      if (telegramIntegrations.length === 0) {
-        console.warn('No active Telegram integration found');
+      const botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
+      const chatId = this.configService.get<string>('TELEGRAM_CHAT_ID');
+
+      if (botToken && chatId) {
+        await this.telegramService.sendMessageToChat(botToken, chatId, message, { parseMode: 'HTML' });
+        order.isSentToTelegram = true;
+        order.sentToTelegramAt = new Date();
+        await order.save();
         return;
       }
 
-      
+      const telegramIntegrations = await this.integrationsService.findActiveByType(IntegrationType.TELEGRAM);
+      if (telegramIntegrations.length === 0) {
+        console.warn('No TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID in env and no active Telegram integration in DB');
+        return;
+      }
+
       const integration = telegramIntegrations[0];
-
-      
-      const message = this.formatOrderMessage(order);
-
-      
       await this.telegramService.sendMessage(
         integration as any,
         message,
         undefined,
         { parseMode: 'HTML' },
       );
-
-      
       order.isSentToTelegram = true;
       order.sentToTelegramAt = new Date();
       await order.save();
     } catch (error) {
       console.error('Failed to send order to Telegram:', error);
-      
     }
   }
 
